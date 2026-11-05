@@ -75,6 +75,16 @@ public:
             result |= SemiFlushQueryDirty(location);
             return result;
         });
+        // Explicit DMA/HLE reads must also wait for fence-delayed reports. Do not publish their
+        // value here, even if finalized: the host GPU must complete the work preceding the report.
+        // Keep them out of IsRegionGpuModified so ordinary CPU progress polling stays nonblocking.
+        std::scoped_lock lock(cache_mutex);
+        for (const auto& [report_addr, location] : delayed_reports) {
+            if (report_addr < addr + size && addr < report_addr + sizeof(u32)) {
+                result = true;
+                break;
+            }
+        }
         return result;
     }
 
@@ -180,6 +190,8 @@ protected:
     /// Fence-flagged Switch 2 reports whose write waits for their fence, by device address, so
     /// conditional rendering asks the query rather than the stale guest word meanwhile.
     ::Common::unordered_map<DAddr, QueryLocation> delayed_reports;
+    /// A delayed report rides on the next fence: it must wait for the host GPU (and submit).
+    std::atomic<bool> needs_real_fence{false};
     std::mutex cache_mutex;
 
     struct QueryCacheBaseImpl;
