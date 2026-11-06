@@ -1366,6 +1366,14 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         FrontWrite(split, fs, 0x155, low, true, true);
         FrontWrite(split, fs, enable_high, high, true, true);
         FrontWrite(split, fs, enable_low, low, true, true);
+        // The condition reads the counters on the back. Write out the reports the query cache
+        // still holds for them first, at this place in the queue (as FrontDmaRead does with
+        // split.Run, but without the front waiting). Without #161 merged, skipping this turned
+        // Ocarina's scene white.
+        const GPUVAddr counters = (GPUVAddr{high & 0x1ffffff} << 32) | low;
+        split.Defer([this, counters] {
+            VideoCommon::QueryDma::FlushPending(memory_manager, *rasterizer, counters, 24);
+        });
         FrontWrite(split, fs, enable_mode,
                    static_cast<u32>(invert != 0 ? Regs::RenderEnable::Mode::IfEqual
                                                 : Regs::RenderEnable::Mode::IfNotEqual),
