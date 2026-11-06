@@ -8,9 +8,11 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <string>
+#include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/bit_util.h"
 #include "common/scope_exit.h"
@@ -1313,6 +1315,28 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
     VideoCommon::Nx2Profile::CountMethod(method, false);
+    // EDEN_NX2_MME_TRACE=<macro method, hex>: log the first 64 calls of that macro on the split
+    // front (parameters, words appended by MME_DMA_READ_FIFOED, every method it emits), and
+    // write the macro code and start positions to nx2-mme-code.bin / nx2-mme-positions.bin.
+    static const u32 trace_macro = [] {
+        const char* value = std::getenv("EDEN_NX2_MME_TRACE");
+        return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 16)) : 0U;
+    }();
+    static u32 traced_calls{};
+    const bool tracing = trace_macro != 0 && method == trace_macro && traced_calls < 64;
+    std::vector<u32> trace_parameters;
+    std::vector<std::pair<u32, u32>> trace_emits;
+    if (tracing) {
+        trace_parameters = fs.parameters;
+        if (traced_calls == 0) {
+            std::ofstream code_file{"nx2-mme-code.bin", std::ios::binary};
+            code_file.write(reinterpret_cast<const char*>(engine.native_code.data()),
+                            sizeof(engine.native_code));
+            std::ofstream positions_file{"nx2-mme-positions.bin", std::ios::binary};
+            positions_file.write(reinterpret_cast<const char*>(positions.data()),
+                                 positions.size_bytes());
+        }
+    }
     {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
@@ -1330,6 +1354,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             }
         };
         const auto emit = [&](u32 address, u32 value) {
+            if (tracing) {
+                trace_emits.emplace_back(address, value);
+            }
             if (address >= MacroRegistersStart) {
                 return false;
             }
@@ -1364,6 +1391,16 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             LOG_ERROR(HW_GPU, "Native MME (split front) failed: start={:#x}, consumed={}/{}, error={}",
                       start, result.consumed, parameter_count, result.error);
         }
+    }
+    if (tracing) {
+        ++traced_calls;
+        std::string emitted;
+        for (const auto& [address, value] : trace_emits) {
+            emitted += fmt::format(" {:#x}={:#x}", address, value);
+        }
+        LOG_INFO(HW_GPU, "MME trace {:#x} call {} start={:#x} parameters [{:x}] fifo after [{:x}] emits:{}",
+                 method, traced_calls, start, fmt::join(trace_parameters, " "),
+                 fmt::join(fs.parameters, " "), emitted);
     }
     fs.parameters.clear();
     if (fs.draw_pending) {
