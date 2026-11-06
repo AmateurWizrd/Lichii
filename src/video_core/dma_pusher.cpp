@@ -133,8 +133,50 @@ bool DmaPusher::Step() {
         // A queued writer may not have marked its destination pages yet. Execute all queued
         // writers before consulting that bitmap or fetching command words, including writers
         // queued after the last host sync.
+        // EDEN_NX2_WRITER_WAIT_LEARN=1: only for entries on pages that have held GPU-written
+        // commands before (Nx2IsCommandListPage). Ocarina of Time waits here before nearly every
+        // entry and no entry turned out to be GPU-written. Each skipped entry is checked on the
+        // back, after the writers queued before it: had one of them written its pages, the entry
+        // was read stale. That is logged, and the pages are marked so later entries wait again.
         if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-            split.WaitForWriters();
+            static const bool learn_writers = [] {
+                const char* value = std::getenv("EDEN_NX2_WRITER_WAIT_LEARN");
+                return value != nullptr && value[0] == '1';
+            }();
+            bool skip_writer_wait = learn_writers;
+            std::array<u64, 4> entry_pages{};
+            if (skip_writer_wait) {
+                size_t count = 0;
+                const GPUVAddr end = dma_state.dma_get + u64{header.size} * sizeof(u32);
+                for (GPUVAddr page = dma_state.dma_get & ~GPUVAddr{0xfff}; page < end;
+                     page += 0x1000) {
+                    const auto device = memory_manager.GpuToCpuAddress(page);
+                    if (!device || count == entry_pages.size() ||
+                        Tegra::Nx2IsCommandListPage(*device) || Tegra::Nx2IsGpuWritten(*device)) {
+                        skip_writer_wait = false;
+                        break;
+                    }
+                    entry_pages[count++] = *device & ~u64{0xfff};
+                }
+            }
+            if (skip_writer_wait) {
+                split.Defer([entry_pages] {
+                    static std::atomic<u32> misses{};
+                    for (const u64 page : entry_pages) {
+                        if (page != 0 && Tegra::Nx2IsGpuWritten(page)) {
+                            Tegra::Nx2MarkCommandListPage(page);
+                            if (misses.fetch_add(1, std::memory_order_relaxed) < 32) {
+                                LOG_WARNING(HW_GPU,
+                                            "EDEN_NX2_WRITER_WAIT_LEARN: entry on page {:#x} was "
+                                            "written by queued GPU work and read without waiting",
+                                            page);
+                            }
+                        }
+                    }
+                });
+            } else {
+                split.WaitForWriters();
+            }
         }
         bool gpu_written = IsGpuWrittenCommands(dma_state.dma_get,
                                                  size_t{header.size} * sizeof(u32));
