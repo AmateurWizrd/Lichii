@@ -1854,15 +1854,30 @@ private:
                 m_stats.frame_us += frame;
                 m_stats.max_frame_us = (std::max)(m_stats.max_frame_us, frame);
                 m_stats.hitches += frame > 100'000 ? 1 : 0;
+                m_stats.frames[m_stats.frame_count++] = frame;
             }
             m_stats.last_present = entered;
             if (++m_stats.presents == 600) {
+                // Percentiles and drop counts tell steady frame times from hitches, which the
+                // mean and max alone can't: over 20 ms missed a 60 Hz vblank, over 34 ms two.
+                const auto frames = std::span{m_stats.frames}.first(m_stats.frame_count);
+                const auto percentile = [&](size_t percent) -> long long {
+                    const auto nth = frames.begin() + frames.size() * percent / 100;
+                    std::ranges::nth_element(frames, nth);
+                    return *nth;
+                };
+                const long long p95 = percentile(95);
+                const long long p99 = percentile(99);
+                const auto over = [&](long long limit) {
+                    return std::ranges::count_if(frames, [limit](long long f) { return f > limit; });
+                };
                 LOG_INFO(Service,
-                         "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
-                         "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us, {} ran a frame ahead",
-                         m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
-                         m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
+                         "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms, p95 {}, "
+                         "p99 {}, {} over 20 ms, {} over 34 ms), blocked on the GPU fence {} us "
+                         "(max {}), composite {} us, vblank pacing {} us, {} ran a frame ahead",
+                         m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches, p95, p99,
+                         over(20'000), over(34'000), m_stats.fence_us / 600,
+                         m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead);
                 m_stats = {.last_present = entered};
             }
@@ -1881,7 +1896,8 @@ private:
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
-        u32 presents{}, ran_ahead{};
+        std::array<long long, 600> frames{}; // frame times of this window's presents
+        u32 presents{}, ran_ahead{}, frame_count{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
