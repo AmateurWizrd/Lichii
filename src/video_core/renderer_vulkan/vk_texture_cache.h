@@ -228,6 +228,37 @@ public:
         return view_formats[static_cast<std::size_t>(format)];
     }
 
+    /// The create info a pooled VkImage was made with: a later image takes it only when all of
+    /// it matches.
+    struct PooledImageKey {
+        VkImageCreateFlags flags;
+        VkImageType type;
+        VkFormat format;
+        u32 width;
+        u32 height;
+        u32 depth;
+        u32 levels;
+        u32 layers;
+        VkSampleCountFlagBits samples;
+        VkImageUsageFlags usage;
+        u64 view_formats_hash;
+
+        bool operator==(const PooledImageKey&) const noexcept = default;
+    };
+
+    /// EDEN_NX2_IMAGE_POOL=1: the VkImages of deleted cache images are kept for a while and
+    /// given to the next image with the same create info, instead of being freed and allocated
+    /// again (Ocarina of Time makes several render targets a frame outdoors; creating and
+    /// destroying them was ~15% of the GPU back thread). Deleted images reach the pool only
+    /// after the delayed destruction ring, so the GPU no longer uses them.
+    [[nodiscard]] bool ImagePoolEnabled() const noexcept {
+        return image_pool_enabled;
+    }
+    /// A pooled image made with `key`, or a null one.
+    vk::Image TakePooledImage(const PooledImageKey& key);
+    /// Keeps `image` for a later TakePooledImage, or frees it when the pool is full.
+    void ParkImage(const PooledImageKey& key, vk::Image&& image, u64 bytes);
+
     void BarrierFeedbackLoop();
 
     bool IsFormatDitherable(VideoCore::Surface::PixelFormat format);
@@ -332,6 +363,21 @@ public:
     std::vector<MsaaScratchImage> msaa_scratch_images;
     ::Common::unordered_map<VkImage, ResolveShadow> resolve_shadows;
     std::vector<std::pair<u64, ResolveShadow>> pending_resolve_shadows;
+
+    struct PooledImage {
+        PooledImageKey key;
+        vk::Image image;
+        u64 bytes;
+        u64 parked_frame;
+    };
+    bool image_pool_enabled{};
+    std::vector<PooledImage> image_pool;
+    u64 image_pool_bytes{};
+    u64 image_pool_frame{};
+    u64 image_pool_reused{};
+    u64 image_pool_missed{};
+    u64 image_pool_parked{};
+    u64 image_pool_dropped{};
 
     struct PendingByteAddressedShadow {
         u64 tick;
@@ -658,6 +704,13 @@ private:
 
     /// Records a clear of the whole image to zero.
     void ClearTiles();
+
+    /// What original_image and scaled_image were made with, when the image pool may keep them
+    /// (declared first: MakeImage fills them while the images are initialized).
+    std::optional<TextureCacheRuntime::PooledImageKey> original_pool_key;
+    std::optional<TextureCacheRuntime::PooledImageKey> scaled_pool_key;
+    u64 original_pool_bytes{};
+    u64 scaled_pool_bytes{};
 
     vk::Image original_image;
     vk::Image scaled_image;
