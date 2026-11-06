@@ -34,7 +34,8 @@ public:
         }
         last = now;
         const float delta = std::clamp(average_seconds * 60.0f, 1.0f, MaxDelta);
-        // Near 60 fps, keep the game's own fixed step instead of following timing jitter.
+        // Near 60 fps (within 3%, like Dark's Dynamic FPS), keep the game's own fixed step
+        // instead of following timing jitter.
         return delta < SnapBelow ? 1.0f : delta;
     }
 
@@ -42,7 +43,7 @@ private:
     static constexpr float MaxFrameSeconds = 0.1f;
     static constexpr float Smoothing = 0.125f;
     static constexpr float MaxDelta = 4.0f;
-    static constexpr float SnapBelow = 1.1f;
+    static constexpr float SnapBelow = 1.03f;
 
     Clock::time_point last{};
     float average_seconds = 1.0f / 60.0f;
