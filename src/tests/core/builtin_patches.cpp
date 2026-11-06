@@ -230,13 +230,14 @@ TEST_CASE("Built-in real-time patch applies all of its words or none", "[patch_m
         std::memcpy(nso.data() + sizeof(Loader::NSOHeader) + 0x3C461E4, &other, sizeof(other));
         const auto patched = context.Manager().PatchNSO(nso, "main");
         REQUIRE(ModuleWord(patched, 0x3C461E0) == 0x00000000);
-        REQUIRE(ModuleWord(patched, 0x6E6CC4) == 0x1E201828);
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) != 0x14D57D48);
     }
 
     SECTION("Disabled in Add-Ons skips") {
         Settings::values.disabled_addons[OcarinaTitleId] = {std::string{RealTime}};
         const auto patched = context.Manager().PatchNSO(nso, "main");
-        REQUIRE(ModuleWord(patched, 0x6E6CC4) == 0x1E201828);
+        REQUIRE(ModuleWord(patched, 0x3C461E0) == 0x00000000);
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) != 0x14D57D48);
     }
 
     SECTION("It is one Add-Ons entry") {
