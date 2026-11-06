@@ -76,6 +76,33 @@ constexpr std::array OCARINA_REAL_TIME{
                      Service::Nx2OotTime::HookInstruction},
 };
 
+// Dynamic FPS by Dark (Eglantine Dev), bundled with his permission (Frizti 765659af): the frame
+// loop calls a routine in the zeros after .text that scales the step by the time measured with the
+// system counter. It hooks the same instruction as the real-time patch, so only the first of the
+// two that is enabled applies.
+constexpr std::array<u32, 30> DYNAMIC_FPS_ROUTINE{
+    0x1E201828, 0xB00092CA, 0x9138014A,
+    0xD53BE02B, 0xF940014C, 0xF900014B,
+    0xB40002CC, 0xCB0C016B, 0xD53BE00D,
+    0xD280028E, 0x9ACE09AE, 0xEB0E017F,
+    0x9A8B81CB, 0xF940054C, 0xB500004C,
+    0xAA0B03EC, 0xCB0C016E, 0x8B8E0D8C,
+    0xF900054C, 0x9E230182, 0x9E2301A3,
+    0x1E231842, 0x1E210842, 0x1C0000C3,
+    0x1E230903, 0x1E232040, 0x5400004D,
+    0x1E204048, 0xD65F03C0, 0x3F83D70A,
+};
+
+constexpr auto OCARINA_DYNAMIC_FPS = [] {
+    std::array<BuiltinPatchWord, 1 + DYNAMIC_FPS_ROUTINE.size()> words{};
+    // fdiv s8, s1, s0 -> bl 0x3c46200
+    words[0] = {Service::Nx2OotTime::HookOffset, 0x1E201828, 0x94D57D4F};
+    for (size_t i = 0; i < DYNAMIC_FPS_ROUTINE.size(); ++i) {
+        words[i + 1] = {0x3C46200 + i * sizeof(u32), 0x00000000, DYNAMIC_FPS_ROUTINE[i]};
+    }
+    return words;
+}();
+
 constexpr std::array BUILTIN_PATCHES{
     // Ocarina of Time takes its "dynamic resolution disabled" path, so the 3D renders at full scale
     // instead of following the GPU-time controller down to its 480p floor.
@@ -94,6 +121,15 @@ constexpr std::array BUILTIN_PATCHES{
         .module = "main",
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .words = OCARINA_REAL_TIME,
+    },
+    // Applies only while the real-time patch above is disabled in Add-Ons: both hook
+    // main+0x6e6cc4.
+    BuiltinPatch{
+        .name = "Dynamic FPS by Dark (built-in, needs Real-time speed off)",
+        .title_id = Service::Nx2OotTime::ProgramId,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .words = OCARINA_DYNAMIC_FPS,
     },
 };
 
@@ -546,8 +582,8 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             }
             if (const auto modded = word_at(out, offset); modded != word.original) {
                 LOG_INFO(Loader,
-                         "    - Skipping \"{}\": a user mod already patched {}+{:#x} to "
-                         "{:#010x}, the mod's patch is used",
+                         "    - Skipping \"{}\": {}+{:#x} is already patched to {:#010x} by a mod "
+                         "or an earlier built-in patch, that patch is used",
                          patch.name, name, word.module_offset, modded.value_or(0));
                 return false;
             }

@@ -245,6 +245,39 @@ TEST_CASE("Built-in real-time patch applies all of its words or none", "[patch_m
     }
 }
 
+TEST_CASE("Dark's Dynamic FPS patch replaces the real-time patch only when that is off",
+          "[patch_manager]") {
+    constexpr std::string_view DynamicFps =
+        "Dynamic FPS by Dark (built-in, needs Real-time speed off)";
+    constexpr u32 DynamicFpsCall = 0x94D57D4F;  // bl 0x3c46200
+    constexpr u32 RealTimeBranch = 0x14D57D48; // b 0x3c461e4
+    PatchManagerTestContext context;
+    const auto nso = MakeRealTimeMain();
+
+    SECTION("Both enabled: the real-time patch applies, the routine stays out") {
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) == RealTimeBranch);
+        REQUIRE(ModuleWord(patched, 0x3C46200) == 0x00000000);
+    }
+
+    SECTION("Real-time speed disabled: Dynamic FPS applies") {
+        Settings::values.disabled_addons[OcarinaTitleId] = {std::string{RealTime}};
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) == DynamicFpsCall);
+        REQUIRE(ModuleWord(patched, 0x3C46200) == 0x1E201828);
+        REQUIRE(ModuleWord(patched, 0x3C46274) == 0x3F83D70A);
+        REQUIRE(ModuleWord(patched, 0x3C461E0) == 0x00000000);
+    }
+
+    SECTION("Both disabled: the game's own fdiv stays") {
+        Settings::values.disabled_addons[OcarinaTitleId] = {std::string{RealTime},
+                                                            std::string{DynamicFps}};
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) == 0x1E201828);
+        REQUIRE(ModuleWord(patched, 0x3C46200) == 0x00000000);
+    }
+}
+
 TEST_CASE("Built-in Max Resolution patch is listed and loaded for Ocarina's main",
           "[patch_manager]") {
     PatchManagerTestContext context;
