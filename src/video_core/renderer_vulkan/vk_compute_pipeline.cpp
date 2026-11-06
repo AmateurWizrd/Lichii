@@ -290,7 +290,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .basePipelineIndex = 0,
         };
         try {
-            const PipelineCompileLog compile_log{"compute", fmt::format("s6:{:016x}", shader_hash)};
+            const PipelineCompileLog compile_log{
+                disable_driver_optimization ? "compute (unoptimized)" : "compute",
+                fmt::format("s6:{:016x}", shader_hash)};
             pipeline = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,

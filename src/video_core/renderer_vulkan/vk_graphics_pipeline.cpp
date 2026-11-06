@@ -1297,7 +1297,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
             }
         }
     }
-    const PipelineCompileLog compile_log{"graphics", std::move(compile_shaders)};
+    const PipelineCompileLog compile_log{unoptimized ? "graphics (unoptimized)" : "graphics",
+                                         std::move(compile_shaders)};
     pipeline = device.GetLogical().CreateGraphicsPipeline({
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
