@@ -338,8 +338,8 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
             .pClearValues = clear_value_count != 0 ? values.data() : nullptr,
         };
         if (after_compute) {
-            // Draws read compute output as indirect arguments, vertices and resources; AMD's
-            // drivers do not order that on their own (Ocarina's minimap and prompts vanished).
+            // Draws read compute output as indirect arguments, vertices and resources; nothing
+            // else orders those reads after the dispatch.
             static constexpr VkMemoryBarrier COMPUTE_TO_GRAPHICS{
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                 .pNext = nullptr,
