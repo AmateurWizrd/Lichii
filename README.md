@@ -10,6 +10,19 @@
   <img src="dist/branding/lichii_icon_with_logo.png" alt="Lichii" width="600">
 </p>
 
+# About this fork
+
+This fork tunes Lichii for The Legend of Zelda: Ocarina of Time on one PC: Ryzen 7 7800X3D, GeForce RTX 5070 Ti, Windows 11. The work is done with AI coding agents (Claude, Codex and others) and checked by playing the game. Measurements and logs go back upstream as comments on the matching issues and pull requests.
+
+Branches:
+
+- `oot-play`: upstream `nx2` with the open fixes #149, #204, #215 and #216 merged. This is the build we play on.
+- `oot-161`: `oot-play` with #161 (GPU thread synchronization) merged, for measurement. Experimental.
+
+Settings that work on this PC: GPU Mode Low (Lichii runs its second GPU thread only on Low), Docked, 2x resolution, Area filter. Use the MSVC build: the Windows MinGW (PGO) build has no AV1 decoder, and the game's intro movies need one.
+
+No game files, keys or firmware are in this repository. The upstream README follows.
+
 # Lichii
 
 Lichii is an experimental, open-source Nintendo Switch and Switch 2 emulator written in C++. It builds on Eglantine, Eden, yuzu and Sudachi, preserving their contributions while developing this fork's game compatibility and renderer fixes.
