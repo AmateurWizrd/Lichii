@@ -291,9 +291,19 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
                                            device_addr_end_aligned - device_addr_start_aligned);
-    // A preflushable mark persists and downloads later GPU writes at every fence. Native titles
-    // instead keep read traps and flush on demand.
-    const bool preflush = !Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    // A preflushable mark persists and downloads later GPU writes to the marked pages at every
+    // fence (QueueFenceDownload queues just those pages). Native titles instead keep read traps
+    // and flush on demand, which drains the GPU for each read; EDEN_NX2_PREFLUSH=1 marks them
+    // too (Ocarina of Time: ~100 such drains a second at Kokiri Forest), =0 never marks.
+    static const std::optional<bool> forced_preflush = []() -> std::optional<bool> {
+        const char* value = std::getenv("EDEN_NX2_PREFLUSH");
+        if (value == nullptr) {
+            return std::nullopt;
+        }
+        return value[0] != '0';
+    }();
+    const bool preflush =
+        forced_preflush.value_or(!Tegra::g_nx2_ampere.load(std::memory_order_relaxed));
     if (!area->preemtive) {
         if (Nx2DownloadTrace::g_enabled) [[unlikely]] {
             Nx2DownloadTrace::Marked(device_addr_start_aligned,
