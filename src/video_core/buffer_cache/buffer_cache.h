@@ -1493,6 +1493,25 @@ void BufferCache<P>::ResolveMultiRangeStorage(Binding& binding, bool is_written,
         if (is_written && !runtime.PrefersSparseSources()) {
             return;
         }
+        // A binding in one device-contiguous mapping (nearly all of them) has no segments.
+        // MaxContinuousRange answers from the runs kept at map time; the range cache below keys on
+        // the exact address and size, so Ocarina's per-draw offsets into its storage pools missed
+        // it and walked the page table on every bind (~5% of the GPU back thread).
+        if (gpu_memory->MaxContinuousRange(binding.gpu_addr, binding.size) >= binding.size) {
+            if (Nx2Perf::Verify()) {
+                const VirtualSegments* checked =
+                    virtual_ranges.Query(*gpu_memory, binding.gpu_addr, binding.size);
+                static std::atomic<u32> logged{};
+                if (checked && checked->size() >= 2 &&
+                    logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf storage segments: [{:#x}, +{:#x}) is contiguous but has {} "
+                              "segments",
+                              binding.gpu_addr, binding.size, checked->size());
+                }
+            }
+            return;
+        }
         const VirtualSegments* found =
             virtual_ranges.Query(*gpu_memory, binding.gpu_addr, binding.size);
         if (!found || found->size() < 2) {
