@@ -1292,6 +1292,26 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
     split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr);
 }
 
+namespace {
+/// The NVN driver's occlusion test macro as Ocarina of Time uploads it (macro method 0xe2c there):
+/// DMA-reads 6 words at P1:P2, compares the 64-bit counters at +0 and +16, and writes
+/// render_enable.mode. Matched by code rather than by method, so another driver build falls back
+/// to running the macro.
+constexpr std::array<u32, 27> NvnOcclusionMacroCode{
+    0x00940003, 0x18C00455, 0x31C10300, 0x8A600003, 0x18C01856, 0x318C0300, 0x00000007,
+    0x18C00400, 0x359C1F00, 0x00000003, 0x1D000000, 0x31C08300, 0x00000003, 0x18C00000,
+    0x3BCC0300, 0x00000003, 0xA003C000, 0x3810BF00, 0x00000003, 0x18C00000, 0x0010BB00,
+    0x0018155B, 0x18C00000, 0x72213C29, 0x00200003, 0x18C00000, 0x302C0300,
+};
+
+bool IsNvnOcclusionMacro(std::span<const u32> code, u32 start) {
+    const size_t first = size_t{start} * 3;
+    return first + NvnOcclusionMacroCode.size() <= code.size() &&
+           std::equal(NvnOcclusionMacroCode.begin(), NvnOcclusionMacroCode.end(),
+                      code.begin() + static_cast<std::ptrdiff_t>(first));
+}
+} // Anonymous namespace
+
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                               FrontState& fs) {
     const u32 method = fs.executing_macro;
@@ -1322,7 +1342,37 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                                  positions.size_bytes());
         }
     }
-    {
+    // EDEN_NX2_OCCLUSION_HLE=1: run the NVN occlusion test macro (matched by its code, see
+    // IsNvnOcclusionMacro) as the render-enable condition it computes, instead of reading the two
+    // counters back from GPU memory. The macro reads 64-bit counters at A and A + 16 and writes
+    // render_enable.mode = (counters differ) ? !P0 : P0; RENDER_IF_NOT_EQUAL / RENDER_IF_EQUAL on
+    // A makes the host GPU evaluate the same comparison (host conditional rendering) with no
+    // front-thread wait. The render-enable address is put back afterwards: the macro never wrote
+    // it, and the condition is set up when the mode is written.
+    static const bool occlusion_hle = [] {
+        const char* value = std::getenv("EDEN_NX2_OCCLUSION_HLE");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (occlusion_hle && fs.parameters.size() == 3 && fs.parameters[0] <= 1 &&
+        IsNvnOcclusionMacro(engine.native_code, start)) {
+        VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+        constexpr u32 enable_high = MAXWELL3D_REG_INDEX(render_enable.address_high);
+        constexpr u32 enable_low = MAXWELL3D_REG_INDEX(render_enable.address_low);
+        constexpr u32 enable_mode = MAXWELL3D_REG_INDEX(render_enable.mode);
+        const u32 invert = fs.parameters[0], high = fs.parameters[1], low = fs.parameters[2];
+        const u32 old_high = fs.regs[enable_high], old_low = fs.regs[enable_low];
+        // MME_MEM_ADDRESS_A/B, as the macro leaves them.
+        FrontWrite(split, fs, 0x154, high, true, true);
+        FrontWrite(split, fs, 0x155, low, true, true);
+        FrontWrite(split, fs, enable_high, high, true, true);
+        FrontWrite(split, fs, enable_low, low, true, true);
+        FrontWrite(split, fs, enable_mode,
+                   static_cast<u32>(invert != 0 ? Regs::RenderEnable::Mode::IfEqual
+                                                : Regs::RenderEnable::Mode::IfNotEqual),
+                   true, true);
+        FrontWrite(split, fs, enable_high, old_high, true, true);
+        FrontWrite(split, fs, enable_low, old_low, true, true);
+    } else {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
         const auto parameter_count = fs.parameters.size();
