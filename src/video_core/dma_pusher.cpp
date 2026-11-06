@@ -185,8 +185,49 @@ bool DmaPusher::Step() {
         // (the split only starts with unsafe reads; the settings can change mid-game).
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
-            VideoCommon::GpuSplit::Get().WaitForWriters()) {
+        // EDEN_NX2_WRITER_WAIT_LEARN=1: wait for the queued writers only for entries on pages that
+        // have held GPU-written commands before (Nx2IsCommandListPage). Ocarina of Time waits
+        // here before nearly every entry (~340 ms/s) and no entry turned out to be GPU-written.
+        // Each skipped entry is checked on the back, after the writers queued before it: had one
+        // of them written its pages, the entry was read stale. That is logged, and the pages are
+        // marked so that later entries on them wait again.
+        static const bool learn_writers = [] {
+            const char* value = std::getenv("EDEN_NX2_WRITER_WAIT_LEARN");
+            return value != nullptr && value[0] == '1';
+        }();
+        auto& entry_split = VideoCommon::GpuSplit::Get();
+        bool skip_writer_wait = false;
+        std::array<u64, 4> entry_pages{};
+        if (!gpu_written && learn_writers && entry_split.Active()) {
+            size_t count = 0;
+            skip_writer_wait = true;
+            const GPUVAddr end = dma_state.dma_get + u64{header.size} * sizeof(u32);
+            for (GPUVAddr page = dma_state.dma_get & ~GPUVAddr{0xfff}; page < end; page += 0x1000) {
+                const auto device = memory_manager.GpuToCpuAddress(page);
+                if (!device || count == entry_pages.size() ||
+                    Tegra::Nx2IsCommandListPage(*device)) {
+                    skip_writer_wait = false;
+                    break;
+                }
+                entry_pages[count++] = *device & ~u64{0xfff};
+            }
+        }
+        if (skip_writer_wait) {
+            entry_split.Defer([entry_pages] {
+                static std::atomic<u32> misses{};
+                for (const u64 page : entry_pages) {
+                    if (page != 0 && Tegra::Nx2IsGpuWritten(page)) {
+                        Tegra::Nx2MarkCommandListPage(page);
+                        if (misses.fetch_add(1, std::memory_order_relaxed) < 32) {
+                            LOG_WARNING(HW_GPU,
+                                        "EDEN_NX2_WRITER_WAIT_LEARN: entry on page {:#x} was "
+                                        "written by queued GPU work and read without waiting",
+                                        page);
+                        }
+                    }
+                }
+            });
+        } else if (!gpu_written && entry_split.Active() && entry_split.WaitForWriters()) {
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
         }
