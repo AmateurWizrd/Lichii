@@ -259,8 +259,15 @@ template <class P>
 void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
     // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
-    // MaxCriticalMemory on rather than near the card's budget.
-    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+    // MaxCriticalMemory on rather than near the card's budget. That figure is for native
+    // resolution: rescaled render targets take the scale squared (Ocarina of Time at 2x needs
+    // ~8.6 GB, and under the 5 GiB cap the collector deleted and recreated ~500 images a second,
+    // downloading many of them first), so the cap grows with it. The thresholds computed from the
+    // device budget still bound it.
+    const f32 scale = Settings::values.resolution_info.up_factor;
+    const u64 max_critical = static_cast<u64>(
+        static_cast<f64>(MaxCriticalMemory) * (std::max)(1.0, static_cast<f64>(scale) * scale));
+    critical_memory = (std::min)(critical_memory, max_critical);
     expected_memory =
         (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
     minimum_memory =

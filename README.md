@@ -19,6 +19,7 @@ Branches:
 - `oot-play`: upstream `nx2` with the open fixes #149, #204, #215 and #216 merged. This is the build we play on.
 - `oot-hle`: `oot-play` plus a replacement for the game's occlusion test macro (`EDEN_NX2_OCCLUSION_HLE=1`, off by default). The macro read two visibility counters from GPU memory up to 45,000 times a second and made the first GPU thread wait for the second each time; the replacement hands the comparison to Lichii's render-enable condition instead. Experimental.
 - `oot-161`: `oot-play` with #161 (GPU thread synchronization) and the occlusion replacement, for measurement. Experimental.
+- `oot-next`: upstream `nx2` after #194 (the Frizti port) with #204/#215, #216 and #149's remaining shader fix, plus everything from `oot-hle`: the occlusion replacement, `EDEN_NX2_WRITER_WAIT_LEARN=1` (skip the per-entry wait for queued compute/DMA work on pages that never held GPU-written commands), `EDEN_NX2_IMAGE_POOL=1` (reuse deleted images' VkImages), and a texture cache collector cap that grows with the resolution scale. Experimental.
 
 Settings that work on this PC: GPU Mode Low (Lichii runs its second GPU thread only on Low), Docked, 2x resolution, Area filter. Use the MSVC build: the Windows MinGW (PGO) build has no AV1 decoder, and the game's intro movies need one.
 
