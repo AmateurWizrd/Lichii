@@ -75,6 +75,8 @@ void FenceManager::WaitFence(Fence& fence) {
 }
 
 void FenceManager::SubmitDeferredWork() {
+    // Only the split's back defers (Scheduler::DeferFlush) and submits; another thread would
+    // race the scheduler and the fence's own wait already asks the back (WaitSubmitted).
     if (VideoCommon::GpuSplit::OnBackThread()) {
         scheduler.FlushDeferred();
     }
