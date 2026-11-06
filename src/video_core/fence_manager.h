@@ -157,9 +157,6 @@ public:
                 wait_cv.notify_all();
             });
             SignalFence(std::move(func));
-            if (wait_finished.load(std::memory_order_relaxed)) {
-                return; // The callback ran at once (undelayed fences)
-            }
             // The fence's commands can be held back by a deferred flush that only this thread
             // submits (Scheduler::DeferFlush): the fencing thread runs the callback once the
             // fence's work is submitted, so waiting here without submitting deadlocks

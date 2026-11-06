@@ -29,6 +29,7 @@ struct Cache {
     void AccumulateFlushes() {}
     void CommitAsyncFlushes() {}
     void PopAsyncFlushes() {}
+    void ArmDeferredDownloadTraps() {}
 };
 
 struct Fence : VideoCommon::FenceBase {
