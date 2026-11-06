@@ -2405,6 +2405,9 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
                       device_addr, size);
         }
     }
+    if (skip_clean && !memory_tracker.HasPendingCpuUpload(device_addr, size)) {
+        return true;
+    }
     const auto for_each_upload_range = [&](auto&& func) {
         if (skip_clean) {
             memory_tracker.ForEachDirtyUploadRange(device_addr, size, func);
