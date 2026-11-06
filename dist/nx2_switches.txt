@@ -21,9 +21,11 @@ EDEN_NX2_FENCE_BATCH=1
 # 90-220 MB/s of buffers CPU never touches, causing heavy mutex contention and dropping FPS by ~38-63%.
 #EDEN_NX2_BUFFER_DOWNLOADS=1
 
-# Paces frame submission 2 frames ahead. Reduces frametime spikes, but adds ~1-2 frames of input latency.
-# Enable only if frame pacing stability is preferred over responsive controls.
-#EDEN_NX2_FRAMES_AHEAD=2
+# Which frame's GPU fence a present waits for. Unset (default): the previous frame's when this one
+# can't finish yet (Ocarina of Time always runs a frame ahead, Donkey Kong Bananza never does).
+# =1: always the previous frame's while the GPU keeps up (~1 frame more input latency). Any other
+# value: always this frame's.
+#EDEN_NX2_FRAMES_AHEAD=1
 
 # --- Workarounds / Debug ---
 # Terrain/indirect drawing fix for Donkey Kong Bananza: enabled by default. Set to 0 only to leave to GPU.

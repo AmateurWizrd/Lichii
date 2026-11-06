@@ -1858,8 +1858,8 @@ private:
             }
             m_stats.last_present = entered;
             if (++m_stats.presents == 600) {
-                // Percentiles and drop counts tell steady frame times from hitches, which the
-                // mean and max alone can't: over 20 ms missed a 60 Hz vblank, over 34 ms two.
+                // Percentiles and interval counts tell steady frame times from hitches, which the
+                // mean and max alone can't. Intervals between presents, not display timestamps.
                 const auto frames = std::span{m_stats.frames}.first(m_stats.frame_count);
                 const auto percentile = [&](size_t percent) -> long long {
                     const auto nth = frames.begin() + frames.size() * percent / 100;
@@ -1875,7 +1875,8 @@ private:
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms, p95 {}, "
                          "p99 {}, {} over 20 ms, {} over 34 ms), blocked on the GPU fence {} us "
                          "(max {}), composite {} us, vblank pacing {} us, {} ran a frame ahead",
-                         m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches, p95, p99,
+                         m_stats.frame_us / m_stats.frame_count, m_stats.max_frame_us,
+                         m_stats.hitches, p95, p99,
                          over(20'000), over(34'000), m_stats.fence_us / 600,
                          m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead);
