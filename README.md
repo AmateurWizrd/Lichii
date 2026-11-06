@@ -17,7 +17,8 @@ This fork tunes Lichii for The Legend of Zelda: Ocarina of Time on one PC: Ryzen
 Branches:
 
 - `oot-play`: upstream `nx2` with the open fixes #149, #204, #215 and #216 merged. This is the build we play on.
-- `oot-161`: `oot-play` with #161 (GPU thread synchronization) merged, for measurement. Experimental.
+- `oot-hle`: `oot-play` plus a replacement for the game's occlusion test macro (`EDEN_NX2_OCCLUSION_HLE=1`, off by default). The macro read two visibility counters from GPU memory up to 45,000 times a second and made the first GPU thread wait for the second each time; the replacement hands the comparison to Lichii's render-enable condition instead. Experimental.
+- `oot-161`: `oot-play` with #161 (GPU thread synchronization) and the occlusion replacement, for measurement. Experimental.
 
 Settings that work on this PC: GPU Mode Low (Lichii runs its second GPU thread only on Low), Docked, 2x resolution, Area filter. Use the MSVC build: the Windows MinGW (PGO) build has no AV1 decoder, and the game's intro movies need one.
 
