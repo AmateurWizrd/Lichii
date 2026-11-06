@@ -31,3 +31,10 @@ The upstream merge also supplies compute write ordering, and main includes `fb16
 
 `4689a160` is relevant to any device without dynamic blend state. `6aaf70f4` masks attachments the fragment shader does not write on every vendor. Their benefits on NVIDIA hardware have not been measured here.
 
+## Build and tests
+
+The MSVC Release build (`build-amd.cmd configure`) and separate test build (`build-tests-amd.cmd`) both completed with `BUILD OK` at `e3b5d227`. The latter was also confirmed up to date by a captured build that reported `ninja: no work to do` and `BUILD OK`. The release executable is `scratch/lichii/build-amd/bin/lichii.exe`; neither it nor a game was launched.
+
+The complete rebased suite ran once: 777 test cases, 774 passed and 3 failed; 69792676 assertions, 69792673 passed and 3 failed (exit 42). The failures are exactly the known baseline failures in `core/nup_writer.cpp:671` and `video_core/nx2_video_render.cpp:151,210`. No additional failures occurred, including in the upstream CAS retry and storage-alignment tests. No separate baseline run was needed because these failures were already supplied as known.
+
+The query-report/HLE reconciliation and preflush controls are integrated by code inspection and compiled in both builds. The tests do not demonstrate their rendering behavior on the friend's AMD driver.
