@@ -19,3 +19,15 @@ This branch starts at `oot-next` commit `7a473ed1` and takes the requested fixes
 `e5b9708d` fixes split-thread scheduler ownership rather than an AMD-specific condition. `62d18eab` makes CAS retry data depend on the failed CAS's returned value. Both are candidates for the NVIDIA branch, subject to its normal testing.
 
 `4689a160` is relevant to any device without dynamic blend state. `6aaf70f4` masks attachments the fragment shader does not write on every vendor. Their benefits on NVIDIA hardware have not been measured here.
+
+## Build and tests
+
+The additional base repairs `594bbdf3`, `1d455af1` and `71c6b3d7` are cherry-picked after the AMD series. These preserve forced deferred fence submission, revert the F2I constant-buffer modifier regression, and repair the draw-binds test reference tracker's usage masks.
+
+The MSVC Release build and separate test build both completed with `BUILD OK` at code commit `bc3cb520`. The release executable is `scratch/lichii/build-amd/bin/lichii.exe`; neither it nor a game was launched.
+
+`tests.exe --list-tags` listed 139 tags. The relevant-tag union `[patch_manager],[nx2_oot_time],[shader],[spirv],[tensor],[buffer_ports],[cpu_readback],[read_traps],[split_fence_wait],[gpu_split_dependencies],[gpu_split_dispatch],[multi_range_refresh],[global_memory],[storage_buffer]` passed: 90 test cases, 228741 assertions.
+
+The complete suite ran once: 769 test cases, 766 passed and 3 failed; 69595073 assertions, 69595070 passed and 3 failed. The failures are exactly the known baseline failures in `core/nup_writer.cpp:671` and `video_core/nx2_video_render.cpp:151,210`. No additional failures occurred. No separate baseline build was needed because these failures were already supplied as known.
+
+The query-report/HLE reconciliation and preflush overrides are integrated by code inspection and compiled in both builds. This test run does not demonstrate their rendering behavior on the friend's AMD driver.
