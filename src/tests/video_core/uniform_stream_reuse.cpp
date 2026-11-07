@@ -19,9 +19,23 @@ void Check(bool condition, const char* message) {
 
 struct Memory {
     std::array<u8, 8192> bytes{};
+    std::array<bool, 2> mapped{true, true};
+    size_t unsafe_reads{};
+    template <typename T>
+    T* GetPointer(u64 address) {
+        if (address >= bytes.size() || !mapped[address / Core::DEVICE_PAGESIZE]) {
+            return nullptr;
+        }
+        return reinterpret_cast<T*>(bytes.data() + address);
+    }
     void ReadBlockUnsafe(u64 address, void* destination, u32 size) {
+        ++unsafe_reads;
         Check(address + size <= bytes.size(), "read outside guest memory");
-        std::memcpy(destination, bytes.data() + address, size);
+        auto* output = static_cast<u8*>(destination);
+        for (u32 i = 0; i < size; ++i) {
+            const u64 current = address + i;
+            output[i] = mapped[current / Core::DEVICE_PAGESIZE] ? bytes[current] : 0;
+        }
     }
 };
 
@@ -113,4 +127,29 @@ TEST_CASE("Uniform stream reuse preserves data through mutation and session rese
         bind(stage, slot, address, size);
         bind(stage, slot, address, size);
     }
+}
+
+TEST_CASE("Uniform stream reuse uses only mapped single-page guest spans", "[video_core]") {
+    Memory memory;
+    Runtime runtime;
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    auto bind = [&](u32 slot, u64 address, u32 size) {
+        Check(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, slot, slot, address, size),
+              "valid small uniform rejected");
+    };
+
+    bind(0, Core::DEVICE_PAGESIZE - 64, 64);
+    Check(memory.unsafe_reads == 0, "page-ending range missed the direct guest path");
+    bind(1, Core::DEVICE_PAGESIZE - 63, 64);
+    Check(memory.unsafe_reads == 1, "cross-page range did not use ReadBlockUnsafe");
+    const auto& crossed = runtime.allocations.at(runtime.bound.allocation);
+    Check(std::memcmp(crossed.data(), memory.bytes.data() + Core::DEVICE_PAGESIZE - 63, 64) == 0,
+          "cross-page fallback changed guest bytes");
+
+    memory.mapped[1] = false;
+    bind(2, Core::DEVICE_PAGESIZE, 64);
+    Check(memory.unsafe_reads == 2, "unmapped page did not use ReadBlockUnsafe");
+    const auto& unmapped = runtime.allocations.at(runtime.bound.allocation);
+    Check(std::all_of(unmapped.begin(), unmapped.end(), [](u8 byte) { return byte == 0; }),
+          "unmapped range did not preserve zero-fill behavior");
 }

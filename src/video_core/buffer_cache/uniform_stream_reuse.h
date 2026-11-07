@@ -12,6 +12,7 @@
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "core/device_memory_manager.h"
 
 namespace VideoCommon {
 
@@ -97,24 +98,41 @@ template <class Runtime, class DeviceMemory>
     }
     Reuse& reuse = UniformStreamReuseState<typename Runtime::StreamUniformRef>();
     typename Reuse::Slot& slot = reuse.slots[stage][index];
-    u8* const scratch = reuse.scratch.data();
-    device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+    const u64 page_offset = device_addr & Core::DEVICE_PAGEMASK;
+    const u8* const guest =
+        size <= Core::DEVICE_PAGESIZE - page_offset ? device_memory.template GetPointer<u8>(device_addr)
+                                                    : nullptr;
+    if (guest != nullptr) {
+        const bool same_bytes =
+            slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
+        if (same_bytes && slot.tick == runtime.CurrentTick()) {
+            runtime.RebindStreamUniform(slot.ref, size);
+            return true;
+        }
+        if (!same_bytes) {
+            slot.size = size;
+            std::memcpy(slot.bytes.data(), guest, size);
+        }
+    } else {
+        device_memory.ReadBlockUnsafe(device_addr, reuse.scratch.data(), size);
+    }
 
     const bool same_bytes =
-        slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
-    if (same_bytes && slot.tick == runtime.CurrentTick()) {
+        guest == nullptr && slot.size == size &&
+        std::memcmp(slot.bytes.data(), reuse.scratch.data(), size) == 0;
+    if (guest == nullptr && same_bytes && slot.tick == runtime.CurrentTick()) {
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
     }
+    if (guest == nullptr && !same_bytes) {
+        slot.size = size;
+        std::memcpy(slot.bytes.data(), reuse.scratch.data(), size);
+    }
     const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
-    std::memcpy(span.data(), scratch, size);
+    std::memcpy(span.data(), slot.bytes.data(), size);
     slot.ref = runtime.LastStreamUniformRef();
     // After the allocation: the tick the stream region is tagged with is the one current now.
     slot.tick = runtime.CurrentTick();
-    if (!same_bytes) {
-        slot.size = size;
-        std::memcpy(slot.bytes.data(), scratch, size);
-    }
     return true;
 }
 
