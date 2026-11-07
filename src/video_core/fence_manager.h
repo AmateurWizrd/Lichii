@@ -107,7 +107,7 @@ public:
                 uncommitted_operations.emplace_back(std::move(func));
             }
             pending_operations.emplace_back(std::move(uncommitted_operations));
-            uncommitted_operations.clear(); // moved-from: make it empty explicitly
+            uncommitted_operations = TakeSpareOperations();
         }
         pending_flushes.push_back(committed_flushes);
         QueueFence(new_fence);
@@ -223,11 +223,12 @@ private:
             }
             PopAsyncFlushes(pending_flushes.front());
             pending_flushes.pop_front();
-            auto operations = std::move(pending_operations.front());
+            Operations operations = std::move(pending_operations.front());
             pending_operations.pop_front();
             for (auto& operation : operations) {
                 operation();
             }
+            RecycleOperations(std::move(operations));
             {
                 std::unique_lock lock(ring_guard);
                 delayed_destruction_ring.Push(std::move(current_fence));
@@ -252,7 +253,7 @@ private:
         }();
         struct Released {
             TFence fence;
-            std::deque<std::function<void()>> operations;
+            Operations operations;
             u8 flushes;
         };
         std::vector<Released> batch;
@@ -313,6 +314,9 @@ private:
                 for (Released& released : batch) {
                     delayed_destruction_ring.Push(std::move(released.fence));
                 }
+            }
+            for (Released& released : batch) {
+                RecycleOperations(std::move(released.operations));
             }
             batch.clear();
         }
@@ -407,9 +411,36 @@ private:
         }
     }
 
+    /// Each fence's operations, as queued. A std::deque allocated a block per std::function
+    /// (MSVC keeps one element a block past 8 bytes) and a map per fence, since the list was
+    /// moved out at each fence: ~120,000 allocations a second from Ocarina of Time's query
+    /// reports alone. Vectors keep their capacity and come back through spare_operations.
+    using Operations = std::vector<std::function<void()>>;
+
+    /// An emptied list for uncommitted_operations; the caller holds uncommitted_guard.
+    Operations TakeSpareOperations() {
+        if (spare_operations.empty()) {
+            return {};
+        }
+        Operations operations = std::move(spare_operations.back());
+        spare_operations.pop_back();
+        return operations;
+    }
+
+    /// Returns a fence's run list for reuse; its callbacks are destroyed outside the lock.
+    void RecycleOperations(Operations&& operations) {
+        if (operations.capacity() == 0) {
+            return; // Most fences carry nothing: no storage to keep
+        }
+        operations.clear();
+        std::scoped_lock lock{uncommitted_guard};
+        spare_operations.push_back(std::move(operations));
+    }
+
     std::queue<TFence> fences;
-    std::deque<std::function<void()>> uncommitted_operations;
-    std::deque<std::deque<std::function<void()>>> pending_operations;
+    Operations uncommitted_operations;
+    std::deque<Operations> pending_operations; ///< Per fence, in fence order
+    std::vector<Operations> spare_operations;  ///< Emptied lists, guarded by uncommitted_guard
     std::deque<u8> pending_flushes; ///< Per fence: the caches that committed downloads
     u32 skipped_fences{}; ///< Empty fences skipped since the last one made (GPU thread only)
     u32 buffer_commit_tick{}; ///< Fences with buffer downloads not yet committed (GPU thread only)

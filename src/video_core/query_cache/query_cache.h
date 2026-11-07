@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include "common/container/unordered_map.h"
+#include <type_traits>
 #include <utility>
 
 #include "common/assert.h"
@@ -163,6 +164,105 @@ struct QueryCacheBase<Traits>::QueryCacheBaseImpl {
         return streamer->GetQuery(location.query_id.Value());
     }
 
+    /// What a deferred report's completion needs: the capture of CounterReport's old lambda.
+    /// Kept in a slot of report_slots (taken on the reporting thread, freed by whichever
+    /// thread runs the completion), so what the fence manager queues is a two-word closure.
+    /// As a lambda capture this was ~72 bytes, past std::function's small buffer, so every
+    /// deferred report heap-allocated (Ocarina of Time: ~120,000 reports a second).
+    struct ReportCompletion {
+        StreamerInterface* streamer;
+        QueryBase* query;
+        QueryCacheBase<Traits>::QueryLocation location;
+        u8* pointer;
+        u8* pointer_timestamp;
+        DAddr cpu_addr;
+        GPUVAddr addr;          ///< Trace only
+        size_t asid;            ///< Trace only
+        QueryType counter_type; ///< Trace only
+        bool is_synced;
+    };
+
+    /// Stores a completion in a free slot (grown only past the peak of reports in flight).
+    u32 PushReport(const ReportCompletion& report) {
+        std::scoped_lock lock{report_guard};
+        if (free_report_slots.empty()) {
+            report_slots.push_back(report);
+            return static_cast<u32>(report_slots.size() - 1);
+        }
+        const u32 slot = free_report_slots.back();
+        free_report_slots.pop_back();
+        report_slots[slot] = report;
+        return slot;
+    }
+
+    /// Runs the deferred half of CounterReport: the query's final value goes to guest memory,
+    /// or the report is dropped when its query was invalidated or never synced.
+    void CompleteReport(u32 slot) {
+        ReportCompletion report{};
+        {
+            std::scoped_lock lock{report_guard};
+            report = report_slots[slot];
+            free_report_slots.push_back(slot);
+        }
+        auto* const streamer = report.streamer;
+        auto* const query_base = report.query;
+        if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
+            if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
+                LOG_INFO(HW_GPU,
+                         "DKB_QUERY discard n={} as={} gpu={:#x} device={:#x} type={} "
+                         "reason=invalidated flags={:#x}",
+                         trace, report.asid, report.addr, report.cpu_addr,
+                         static_cast<u32>(report.counter_type),
+                         static_cast<u32>(query_base->flags));
+            }
+            if (!report.is_synced) [[likely]] {
+                pending_unregister.push_back(report.location);
+            }
+            return;
+        }
+        if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
+            if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
+                LOG_INFO(HW_GPU,
+                         "DKB_QUERY discard n={} as={} gpu={:#x} device={:#x} type={} "
+                         "reason=unsynchronized flags={:#x}",
+                         trace, report.asid, report.addr, report.cpu_addr,
+                         static_cast<u32>(report.counter_type),
+                         static_cast<u32>(query_base->flags));
+            }
+            LOG_ERROR(HW_GPU,
+                      "Query report value not synchronized. Consider increasing GPU accuracy.");
+            if (!report.is_synced) [[likely]] {
+                pending_unregister.push_back(report.location);
+            }
+            return;
+        }
+        query_base->value += streamer->GetAmendValue();
+        streamer->SetAccumulationValue(query_base->value);
+        if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
+            u64 timestamp = gpu.GetTicks();
+            std::memcpy(report.pointer_timestamp, &timestamp, sizeof(timestamp));
+            std::memcpy(report.pointer, &query_base->value, sizeof(query_base->value));
+        } else {
+            u32 value = static_cast<u32>(query_base->value);
+            std::memcpy(report.pointer, &value, sizeof(value));
+        }
+        Tegra::Nx2SemaphoreWaiters::Get().OnWrite(report.cpu_addr,
+                                                  static_cast<u32>(query_base->value));
+        if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Write)) {
+            const bool wide = True(query_base->flags & QueryFlagBits::HasTimestamp);
+            LOG_INFO(HW_GPU,
+                     "DKB_QUERY write n={} path=completion as={} gpu={:#x} device={:#x} type={} "
+                     "bytes={} value={:#x} flags={:#x}",
+                     trace, report.asid, report.addr, report.cpu_addr,
+                     static_cast<u32>(report.counter_type), wide ? 8 : 4,
+                     wide ? query_base->value : static_cast<u32>(query_base->value),
+                     static_cast<u32>(query_base->flags));
+        }
+        if (!report.is_synced) [[likely]] {
+            pending_unregister.push_back(report.location);
+        }
+    }
+
     QueryCacheBase<Traits>* owner;
     VideoCore::RasterizerInterface& rasterizer;
     Tegra::MaxwellDeviceMemoryManager& device_memory;
@@ -173,6 +273,9 @@ struct QueryCacheBase<Traits>::QueryCacheBaseImpl {
     std::mutex flush_guard;
     std::deque<u64> flushes_pending;
     std::vector<QueryCacheBase<Traits>::QueryLocation> pending_unregister;
+    std::mutex report_guard; ///< Guards report_slots and free_report_slots
+    std::vector<ReportCompletion> report_slots;
+    std::vector<u32> free_report_slots;
 };
 
 template <typename Traits>
@@ -282,87 +385,49 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
-    std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp, cpu_addr, addr,
-                                     asid = gpu_memory->GetID(), counter_type] {
-        if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
-            if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
-                LOG_INFO(HW_GPU,
-                         "DKB_QUERY discard n={} as={} gpu={:#x} device={:#x} type={} "
-                         "reason=invalidated flags={:#x}",
-                         trace, asid, addr, cpu_addr, static_cast<u32>(counter_type),
-                         static_cast<u32>(query_base->flags));
-            }
-            if (!is_synced) [[likely]] {
-                impl->pending_unregister.push_back(query_location);
-            }
-            return;
-        }
-        if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
-            if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
-                LOG_INFO(HW_GPU,
-                         "DKB_QUERY discard n={} as={} gpu={:#x} device={:#x} type={} "
-                         "reason=unsynchronized flags={:#x}",
-                         trace, asid, addr, cpu_addr, static_cast<u32>(counter_type),
-                         static_cast<u32>(query_base->flags));
-            }
-            LOG_ERROR(HW_GPU,
-                      "Query report value not synchronized. Consider increasing GPU accuracy.");
-            if (!is_synced) [[likely]] {
-                impl->pending_unregister.push_back(query_location);
-            }
-            return;
-        }
-        query_base->value += streamer->GetAmendValue();
-        streamer->SetAccumulationValue(query_base->value);
-        if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
+    if (!is_fence && !Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
+        // The payload is known now: written at once, nothing to queue.
+        if (has_timestamp) {
             u64 timestamp = impl->gpu.GetTicks();
+            u64 value = static_cast<u64>(payload);
             std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
-            std::memcpy(pointer, &query_base->value, sizeof(query_base->value));
-        } else {
-            u32 value = static_cast<u32>(query_base->value);
             std::memcpy(pointer, &value, sizeof(value));
+        } else {
+            std::memcpy(pointer, &payload, sizeof(payload));
         }
-        Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, static_cast<u32>(query_base->value));
+        Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, payload);
         if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Write)) {
-            const bool wide = True(query_base->flags & QueryFlagBits::HasTimestamp);
             LOG_INFO(HW_GPU,
-                     "DKB_QUERY write n={} path=completion as={} gpu={:#x} device={:#x} type={} "
+                     "DKB_QUERY write n={} path=immediate as={} gpu={:#x} device={:#x} type={} "
                      "bytes={} value={:#x} flags={:#x}",
-                     trace, asid, addr, cpu_addr, static_cast<u32>(counter_type), wide ? 8 : 4,
-                     wide ? query_base->value : static_cast<u32>(query_base->value),
-                     static_cast<u32>(query_base->flags));
+                     trace, gpu_memory->GetID(), addr, cpu_addr, static_cast<u32>(counter_type),
+                     has_timestamp ? 8 : 4, payload, static_cast<u32>(query->flags));
         }
-        if (!is_synced) [[likely]] {
-            impl->pending_unregister.push_back(query_location);
-        }
+        streamer->Free(new_query_id);
+        return;
+    }
+    bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
+    const u32 slot = impl->PushReport({
+        .streamer = streamer,
+        .query = query,
+        .location = query_location,
+        .pointer = pointer,
+        .pointer_timestamp = pointer_timestamp,
+        .cpu_addr = cpu_addr,
+        .addr = addr,
+        .asid = gpu_memory->GetID(),
+        .counter_type = counter_type,
+        .is_synced = is_synced,
     });
+    // Two words, trivially copyable: inside std::function's small buffer on MSVC (48 bytes
+    // for the callable), libstdc++ (16) and libc++ (24), so queueing it allocates nothing.
+    auto operation = [cache = impl.get(), slot] { cache->CompleteReport(slot); };
+    static_assert(sizeof(operation) <= 2 * sizeof(void*) &&
+                  std::is_trivially_copyable_v<decltype(operation)>);
     if (is_fence) {
-        impl->rasterizer.SignalFence(std::move(operation));
+        impl->rasterizer.SignalFence(operation);
     } else {
-        if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
-            if (has_timestamp) {
-                u64 timestamp = impl->gpu.GetTicks();
-                u64 value = static_cast<u64>(payload);
-                std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
-                std::memcpy(pointer, &value, sizeof(value));
-            } else {
-                std::memcpy(pointer, &payload, sizeof(payload));
-            }
-            Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, payload);
-            if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Write)) {
-                LOG_INFO(HW_GPU,
-                         "DKB_QUERY write n={} path=immediate as={} gpu={:#x} device={:#x} type={} "
-                         "bytes={} value={:#x} flags={:#x}",
-                         trace, gpu_memory->GetID(), addr, cpu_addr,
-                         static_cast<u32>(counter_type), has_timestamp ? 8 : 4, payload,
-                         static_cast<u32>(query->flags));
-            }
-            streamer->Free(new_query_id);
-            return;
-        }
-        impl->rasterizer.SyncOperation(std::move(operation));
+        impl->rasterizer.SyncOperation(operation);
     }
     if (is_synced) {
         streamer->Free(new_query_id);
