@@ -52,7 +52,6 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuCommand};
         Common::SetCurrentThreadName("GPU");
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
-        Common::PinCurrentThread(Common::PinnedRole::GpuFront);
         Common::SetCurrentThreadToPerformanceCores();
         system.RegisterHostThread();
 
