@@ -1167,6 +1167,19 @@ void PipelineCache::EvictUnusedPipelines() {
     if (frame_count <= EvictAfterFrames) {
         return;
     }
+    // Only while the cache is large: each one evicted is translated again on the GPU thread when
+    // its place is revisited (2.5-26 ms here, not the driver cache's 2-3 ms). Ocarina of Time
+    // evicted 1,830 of 2,560 at 9,000 frames, undoing EDEN_NX2_PRELOAD_ALL_PIPELINES, and a
+    // 25-minute session rebuilt 1,850 (14 s of stalls; Frizti 7b519498). 8,000 pipelines are
+    // ~3.6 GB of driver memory at most. EDEN_NX2_PIPELINE_EVICT_ABOVE sets the limit.
+    static const size_t evict_above = [] {
+        const char* value = std::getenv("EDEN_NX2_PIPELINE_EVICT_ABOVE");
+        return value != nullptr ? static_cast<size_t>(std::strtoull(value, nullptr, 10))
+                                : size_t{8000};
+    }();
+    if (graphics_cache.size() <= evict_above) {
+        return;
+    }
     const u64 cutoff = frame_count - EvictAfterFrames;
     const u64 tick = scheduler.CurrentTick();
     size_t evicted = 0;
